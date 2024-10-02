@@ -95,6 +95,10 @@ async function reportBuildFailed() {
   }
 }
 
+const tlsClientKeyPath = '/tmp/blacksmith_client_key.pem';
+const tlsClientCaCertificatePath = '/tmp/blacksmith_client_ca_certificate.pem';
+const tlsRootCaCertificatePath = '/tmp/blacksmith_root_ca_certificate.pem';
+
 // getRemoteBuilderAddr resolves the address to a remote Docker builder.
 // If it is unable to do so because of a timeout or an error it returns null.
 async function getRemoteBuilderAddr(inputs: context.Inputs): Promise<string | null> {
@@ -135,11 +139,20 @@ async function getRemoteBuilderAddr(inputs: context.Inputs): Promise<string | nu
     core.info(`Submitted build task: ${taskId}`);
     stateHelper.setBlacksmithBuildTaskId(taskId);
     const clientKey = data['client_key'] as string;
-    stateHelper.setBlacksmithClientKey(clientKey);
+    if (clientKey !== undefined && clientKey !== '') {
+      stateHelper.setBlacksmithClientKey(clientKey);
+      await fs.promises.writeFile(tlsClientKeyPath, clientKey, 'utf8');
+    }
     const clientCaCertificate = data['client_ca_certificate'] as string;
-    stateHelper.setBlacksmithClientCaCertificate(clientCaCertificate);
+    if (clientCaCertificate !== undefined && clientCaCertificate !== '') {
+      stateHelper.setBlacksmithClientCaCertificate(clientCaCertificate);
+      await fs.promises.writeFile(tlsClientCaCertificatePath, clientCaCertificate, 'utf8');
+    }
     const rootCaCertificate = data['root_ca_certificate'] as string;
-    stateHelper.setBlacksmithRootCaCertificate(rootCaCertificate);
+    if (rootCaCertificate !== undefined && rootCaCertificate !== '') {
+      stateHelper.setBlacksmithRootCaCertificate(rootCaCertificate);
+      await fs.promises.writeFile(tlsRootCaCertificatePath, rootCaCertificate, 'utf8');
+    }
 
     const startTime = Date.now();
     while (Date.now() - startTime < 60000) {
@@ -316,8 +329,19 @@ actionsToolkit.run(
     core.debug(`context.getArgs: ${JSON.stringify(args)}`);
 
     const buildCmd = await toolkit.buildx.getCommand(args);
-    core.debug(`buildCmd.command: ${buildCmd.command}`);
-    core.debug(`buildCmd.args: ${JSON.stringify(buildCmd.args)}`);
+
+    // Find the index of the "build" parameter
+    const buildIndex = buildCmd.args.indexOf('build');
+
+    if (buildIndex !== -1) {
+      // Insert TLS arguments after the "build" parameter
+      buildCmd.args.splice(buildIndex + 1, 0, '--tlscacert', tlsRootCaCertificatePath, '--tlscert', tlsClientCaCertificatePath, '--tlskey', tlsClientKeyPath);
+    } else {
+      // If "build" parameter is not found, append TLS arguments at the end
+      buildCmd.args.push('--tlscacert', tlsRootCaCertificatePath, '--tlscert', tlsClientCaCertificatePath, '--tlskey', tlsClientKeyPath);
+    }
+    core.info(`buildCmd.command: ${buildCmd.command}`);
+    core.info(`buildCmd.args: ${JSON.stringify(buildCmd.args)}`);
 
     let err: Error | undefined;
     await Exec.getExecOutput(buildCmd.command, buildCmd.args, {
