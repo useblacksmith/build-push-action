@@ -4,23 +4,23 @@ import * as stateHelper from './state-helper';
 import * as core from '@actions/core';
 import * as actionsToolkit from '@docker/actions-toolkit';
 
-import {Buildx} from '@docker/actions-toolkit/lib/buildx/buildx';
-import {History as BuildxHistory} from '@docker/actions-toolkit/lib/buildx/history';
-import {Context} from '@docker/actions-toolkit/lib/context';
-import {Docker} from '@docker/actions-toolkit/lib/docker/docker';
-import {Exec} from '@docker/actions-toolkit/lib/exec';
-import {GitHub} from '@docker/actions-toolkit/lib/github';
-import {Toolkit} from '@docker/actions-toolkit/lib/toolkit';
-import {Util} from '@docker/actions-toolkit/lib/util';
+import { Buildx } from '@docker/actions-toolkit/lib/buildx/buildx';
+import { History as BuildxHistory } from '@docker/actions-toolkit/lib/buildx/history';
+import { Context } from '@docker/actions-toolkit/lib/context';
+import { Docker } from '@docker/actions-toolkit/lib/docker/docker';
+import { Exec } from '@docker/actions-toolkit/lib/exec';
+import { GitHub } from '@docker/actions-toolkit/lib/github';
+import { Toolkit } from '@docker/actions-toolkit/lib/toolkit';
+import { Util } from '@docker/actions-toolkit/lib/util';
 
-import {BuilderInfo} from '@docker/actions-toolkit/lib/types/buildx/builder';
-import {ConfigFile} from '@docker/actions-toolkit/lib/types/docker/docker';
-import {UploadArtifactResponse} from '@docker/actions-toolkit/lib/types/github';
-import axios, {AxiosError, AxiosInstance, AxiosResponse} from 'axios';
+import { BuilderInfo } from '@docker/actions-toolkit/lib/types/buildx/builder';
+import { ConfigFile } from '@docker/actions-toolkit/lib/types/docker/docker';
+import { UploadArtifactResponse } from '@docker/actions-toolkit/lib/types/github';
+import axios, { AxiosError, AxiosInstance, AxiosResponse } from 'axios';
 
 import * as context from './context';
-import {promisify} from 'util';
-import {exec} from 'child_process';
+import { promisify } from 'util';
+import { exec } from 'child_process';
 import * as TOML from '@iarna/toml';
 
 const buildxVersion = 'v0.17.0';
@@ -158,7 +158,7 @@ async function postWithRetry(client: AxiosInstance, url: string, formData: FormD
   throw new Error('Max retries reached');
 }
 
-async function getWithRetry(client: AxiosInstance, url: string, formData: FormData | null, retryCondition: (error: AxiosError) => boolean, options?: {signal?: AbortSignal}): Promise<AxiosResponse> {
+async function getWithRetry(client: AxiosInstance, url: string, formData: FormData | null, retryCondition: (error: AxiosError) => boolean, options?: { signal?: AbortSignal }): Promise<AxiosResponse> {
   const maxRetries = 5;
   const retryDelay = 100;
 
@@ -173,7 +173,7 @@ async function getWithRetry(client: AxiosInstance, url: string, formData: FormDa
           signal: options?.signal
         });
       }
-      return await client.get(url, {signal: options?.signal});
+      return await client.get(url, { signal: options?.signal });
     } catch (error) {
       if (attempt === maxRetries || !retryCondition(error as AxiosError)) {
         throw error;
@@ -185,7 +185,7 @@ async function getWithRetry(client: AxiosInstance, url: string, formData: FormDa
   throw new Error('Max retries reached');
 }
 
-async function getStickyDisk(dockerfilePath: string, retryCondition: (error: AxiosError) => boolean, options?: {signal?: AbortSignal}): Promise<unknown> {
+async function getStickyDisk(dockerfilePath: string, retryCondition: (error: AxiosError) => boolean, options?: { signal?: AbortSignal }): Promise<unknown> {
   const client = await getBlacksmithAgentClient();
   const formData = new FormData();
   formData.append('stickyDiskKey', dockerfilePath);
@@ -203,7 +203,7 @@ async function getStickyDisk(dockerfilePath: string, retryCondition: (error: Axi
 
 async function getDiskSize(device: string): Promise<number> {
   try {
-    const {stdout} = await execAsync(`sudo lsblk -b -n -o SIZE ${device}`);
+    const { stdout } = await execAsync(`sudo lsblk -b -n -o SIZE ${device}`);
     const sizeInBytes = parseInt(stdout.trim(), 10);
     if (isNaN(sizeInBytes)) {
       throw new Error('Failed to parse disk size');
@@ -263,7 +263,7 @@ async function startBuildkitd(parallelism: number): Promise<string> {
     await execAsync('sudo mkdir -p /run/buildkit');
     await execAsync('sudo chmod 755 /run/buildkit');
     const addr = 'unix:///run/buildkit/buildkitd.sock';
-    const {stdout: startStdout, stderr: startStderr} = await execAsync(
+    const { stdout: startStdout, stderr: startStderr } = await execAsync(
       `sudo nohup buildkitd --addr ${addr} --allow-insecure-entitlement security.insecure --config=buildkitd.toml --allow-insecure-entitlement network.host > buildkitd.log 2>&1 &`
     );
 
@@ -272,7 +272,7 @@ async function startBuildkitd(parallelism: number): Promise<string> {
     }
     core.debug(`buildkitd daemon started successfully ${startStdout}`);
 
-    const {stderr} = await execAsync(`pgrep -f buildkitd`);
+    const { stderr } = await execAsync(`pgrep -f buildkitd`);
     if (stderr) {
       throw new Error(`error finding buildkitd PID: ${stderr}`);
     }
@@ -296,7 +296,7 @@ async function shutdownBuildkitd(): Promise<void> {
 // Function to get the number of available CPUs
 async function getNumCPUs(): Promise<number> {
   try {
-    const {stdout} = await execAsync('sudo nproc');
+    const { stdout } = await execAsync('sudo nproc');
     return parseInt(stdout.trim());
   } catch (error) {
     core.warning('Failed to get CPU count, defaulting to 1:', error);
@@ -355,7 +355,7 @@ async function getBuilderAddr(inputs: context.Inputs, dockerfilePath: string): P
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     try {
-      await getStickyDisk(dockerfilePath, retryCondition, {signal: controller.signal});
+      await getStickyDisk(dockerfilePath, retryCondition, { signal: controller.signal });
       clearTimeout(timeoutId);
       await reportBuild(dockerfilePath);
       await execAsync(`sudo mkdir -p ${mountPoint}`);
@@ -698,6 +698,12 @@ actionsToolkit.run(
     }
     if (stateHelper.dockerBuildStatus != '') {
       try {
+        try {
+          const { stdout } = await execAsync('sudo buildctl du --format json');
+          core.debug(`buildctl du output: ${stdout}`);
+        } catch (error) {
+          core.warning(`Error getting buildctl disk usage: ${error.message}`);
+        }
         await shutdownBuildkitd();
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
@@ -723,7 +729,7 @@ actionsToolkit.run(
     }
     if (stateHelper.tmpDir.length > 0) {
       await core.group(`Removing temp folder ${stateHelper.tmpDir}`, async () => {
-        fs.rmSync(stateHelper.tmpDir, {recursive: true});
+        fs.rmSync(stateHelper.tmpDir, { recursive: true });
       });
     }
   }
