@@ -286,7 +286,7 @@ async function startBuildkitd(parallelism: number): Promise<string> {
     await execAsync('sudo chmod 755 /run/buildkit');
     const addr = 'unix:///run/buildkit/buildkitd.sock';
     const {stdout: startStdout, stderr: startStderr} = await execAsync(
-      `sudo nohup buildkitd --addr ${addr} --allow-insecure-entitlement security.insecure --config=buildkitd.toml --allow-insecure-entitlement network.host > buildkitd.log 2>&1 &`
+      `sudo BUILDKIT_DEBUG_DUMPLLB=1 BUILDKIT_DUMP_LLB_DIR=/tmp/buildkit-llb-dumps nohup buildkitd --addr ${addr} --allow-insecure-entitlement security.insecure --config=buildkitd.toml --allow-insecure-entitlement network.host > buildkitd.log 2>&1 &`
     );
 
     if (startStderr) {
@@ -418,6 +418,9 @@ async function getBuilderAddr(inputs: context.Inputs, dockerfilePath: string): P
     core.debug('Successfully obtained sticky disk, proceeding to start buildkitd');
 
     // Start buildkitd.
+    // Create a directory for LLB dumps
+    const llbDumpDir = '/tmp/buildkit-llb-dumps';
+    await execAsync(`mkdir -p ${llbDumpDir}`);
     const parallelism = await getNumCPUs();
     const buildkitdAddr = await startBuildkitd(parallelism);
     core.debug(`buildkitd daemon started at addr ${buildkitdAddr}`);
@@ -746,6 +749,15 @@ actionsToolkit.run(
     }
     if (stateHelper.dockerBuildStatus != '') {
       try {
+        if (stateHelper.dockerBuildStatus !== 'success' && stateHelper.buildRef) {
+          try {
+            const {stdout} = await execAsync(`sudo buildctl debug logs ${stateHelper.buildRef}`);
+            core.info('Build logs from buildctl:');
+            core.info(stdout);
+          } catch (error) {
+            core.warning(`Failed to get buildctl logs: ${error.message}`);
+          }
+        }
         await shutdownBuildkitd();
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
