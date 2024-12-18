@@ -5,6 +5,7 @@ import {promisify} from 'util';
 import * as TOML from '@iarna/toml';
 import * as reporter from './reporter';
 import FormData from 'form-data';
+import * as net from 'net';
 
 const mountPoint = '/var/lib/buildkit';
 const execAsync = promisify(exec);
@@ -51,12 +52,28 @@ export async function getNumCPUs(): Promise<number> {
   }
 }
 
-async function writeBuildkitdTomlFile(parallelism: number, device: string): Promise<void> {
+// Function to find a free port
+async function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, () => {
+      const address = server.address();
+      if (address && typeof address === 'object') {
+        const port = address.port;
+        server.close(() => resolve(port));
+      } else {
+        server.close(() => reject(new Error('Could not get server address')));
+      }
+    });
+  });
+}
+
+async function writeBuildkitdTomlFile(parallelism: number, device: string, port: number): Promise<void> {
   const diskSize = await getDiskSize(device);
   const jsonConfig: TOML.JsonMap = {
     root: '/var/lib/buildkit',
     grpc: {
-      address: ['unix:///run/buildkit/buildkitd.sock']
+      address: [`tcp://127.0.0.1:${port}`]
     },
     registry: {
       'docker.io': {
@@ -106,18 +123,30 @@ async function writeBuildkitdTomlFile(parallelism: number, device: string): Prom
 
 async function startBuildkitd(parallelism: number, device: string): Promise<string> {
   try {
-    await writeBuildkitdTomlFile(parallelism, device);
+    const port = await findFreePort();
+    await writeBuildkitdTomlFile(parallelism, device, port);
     await execAsync('sudo mkdir -p /run/buildkit');
-    await execAsync('sudo chmod 755 /run/buildkit');
-    const addr = 'unix:///run/buildkit/buildkitd.sock';
+    const addr = `tcp://127.0.0.1:${port}`;
+    
+    // Create a dedicated log file for strace output
+    const straceLogPath = 'buildkitd_strace.log';
+    const buildkitdLogPath = 'buildkitd.log';
+    
+    // Start buildkitd with strace and nohup to ensure it stays running
     const {stdout: startStdout, stderr: startStderr} = await execAsync(
-      `sudo nohup buildkitd --debug --addr ${addr} --allow-insecure-entitlement security.insecure --config=buildkitd.toml --allow-insecure-entitlement network.host > buildkitd.log 2>&1 &`
+      `sudo nohup strace -f -tt -T -y -e trace=all -s 1000 -o ${straceLogPath} ` +
+      `buildkitd --debug --addr ${addr} ` +
+      `--allow-insecure-entitlement security.insecure ` +
+      `--config=buildkitd.toml ` +
+      `--allow-insecure-entitlement network.host > ${buildkitdLogPath} 2>&1 &`
     );
 
     if (startStderr) {
       throw new Error(`error starting buildkitd service: ${startStderr}`);
     }
     core.debug(`buildkitd daemon started successfully ${startStdout}`);
+    core.info(`strace output is being written to ${straceLogPath}`);
+    core.info(`buildkitd logs are being written to ${buildkitdLogPath}`);
 
     const {stderr} = await execAsync(`pgrep -f buildkitd`);
     if (stderr) {
@@ -175,29 +204,13 @@ export async function startAndConfigureBuildkitd(parallelism: number, device: st
   const buildkitdAddr = await startBuildkitd(parallelism, device);
   core.debug(`buildkitd daemon started at addr ${buildkitdAddr}`);
 
-  // Change permissions on the buildkitd socket to allow non-root access
-  const startTime = Date.now();
-  const timeout = 30000; // 30 seconds in milliseconds
-
-  while (Date.now() - startTime < timeout) {
-    if (fs.existsSync('/run/buildkit/buildkitd.sock')) {
-      // Change permissions on the buildkitd socket to allow non-root access
-      await execAsync(`sudo chmod 666 /run/buildkit/buildkitd.sock`);
-      break;
-    }
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Poll every 100ms
-  }
-
-  if (!fs.existsSync('/run/buildkit/buildkitd.sock')) {
-    throw new Error('buildkitd socket not found after 30s timeout');
-  }
   // Check that buildkit instance is ready by querying workers for up to 30s
   const startTimeBuildkitReady = Date.now();
   const timeoutBuildkitReady = 30000; // 30 seconds
   
   while (Date.now() - startTimeBuildkitReady < timeoutBuildkitReady) {
     try {
-      const {stdout} = await execAsync('sudo buildctl debug workers');
+      const {stdout} = await execAsync(`sudo buildctl --addr ${buildkitdAddr} debug workers`);
       const lines = stdout.trim().split('\n');
       if (lines.length > 1) { // Check if we have output lines beyond the header
         break;
@@ -210,7 +223,7 @@ export async function startAndConfigureBuildkitd(parallelism: number, device: st
 
   // Final check after timeout.
   try {
-    const {stdout} = await execAsync('sudo buildctl debug workers');
+    const {stdout} = await execAsync(`sudo buildctl --addr ${buildkitdAddr} debug workers`);
     const lines = stdout.trim().split('\n');
     if (lines.length <= 1) {
       throw new Error('buildkit workers not ready after 30s timeout');
