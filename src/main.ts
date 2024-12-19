@@ -490,8 +490,20 @@ export async function shutdownBuildkitd(): Promise<void> {
     // Wait for buildkitd to shutdown with backoff retry
     while (Date.now() - startTime < timeout) {
       try {
-        await execAsync('pgrep -f buildkitd');
-        // Process still exists, wait and retry
+        const {stdout} = await execAsync('pgrep -f buildkitd');
+        core.info(`buildkitd process still running with PID: ${stdout.trim()}`);
+        // Print all buildkitd-related processes for debugging
+        try {
+          const {stdout: psOutput} = await execAsync('ps aux | grep buildkitd');
+          core.info('Current buildkitd processes:');
+          psOutput.split('\n').forEach(line => {
+            if (line && !line.includes('grep buildkitd')) {
+              core.info(line);
+            }
+          });
+        } catch (error) {
+          core.debug(`Error getting process details: ${error.message}`);
+        }
         await new Promise(resolve => setTimeout(resolve, backoff));
       } catch (error) {
         if (error.code === 1) {
