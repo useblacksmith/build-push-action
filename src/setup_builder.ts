@@ -4,9 +4,57 @@ import {exec, spawn} from 'child_process';
 import {promisify} from 'util';
 import * as TOML from '@iarna/toml';
 import * as reporter from './reporter';
+import * as https from 'https';
 
 const mountPoint = '/var/lib/buildkit';
 const execAsync = promisify(exec);
+const R2_BUCKET_URL = 'https://pub-028d2dfb09134a0eb3779ca5467e49c2.r2.dev';
+
+async function downloadBuildkitd(): Promise<void> {
+  const buildkitdPath = '/usr/local/bin/buildkitd';
+  
+  return new Promise((resolve, reject) => {
+    // Create file with sudo
+    exec(`sudo touch ${buildkitdPath} && sudo chmod 666 ${buildkitdPath}`, async (error) => {
+      if (error) {
+        core.error(`Error creating buildkitd file: ${error}`);
+        reject(error);
+        return;
+      }
+
+      const file = fs.createWriteStream(buildkitdPath);
+      https.get(`${R2_BUCKET_URL}/buildkitd`, (response) => {
+        if (response.statusCode !== 200) {
+          const error = `Failed to download buildkitd: ${response.statusCode}`;
+          core.error(error);
+          reject(new Error(error));
+          return;
+        }
+
+        response.pipe(file);
+        file.on('finish', () => {
+          // Close the file first
+          file.close();
+          // Wait a brief moment to ensure the file is fully closed
+          setTimeout(async () => {
+            try {
+              await execAsync(`sudo chmod +x ${buildkitdPath}`);
+              core.debug('Successfully downloaded and made buildkitd executable');
+              resolve();
+            } catch (error) {
+              core.error(`Error making buildkitd executable: ${error}`);
+              reject(error);
+            }
+          }, 100);
+        });
+      }).on('error', (error) => {
+        core.error(`Error downloading buildkitd: ${error}`);
+        fs.unlink(buildkitdPath, () => {});
+        reject(error);
+      });
+    });
+  });
+}
 
 async function maybeFormatBlockDevice(device: string): Promise<string> {
   try {
@@ -95,6 +143,9 @@ async function writeBuildkitdTomlFile(parallelism: number): Promise<void> {
 
 async function startBuildkitd(parallelism: number): Promise<string> {
   try {
+    // Download buildkitd binary first
+    await downloadBuildkitd();
+    
     await writeBuildkitdTomlFile(parallelism);
     await execAsync('sudo mkdir -p /run/buildkit');
     await execAsync('sudo chmod 755 /run/buildkit');
@@ -102,7 +153,7 @@ async function startBuildkitd(parallelism: number): Promise<string> {
 
     const logStream = fs.createWriteStream('buildkitd.log');
     const buildkitd = spawn('sudo', [
-      'buildkitd',
+      '/usr/local/bin/buildkitd',
       '--debug',
       '--addr', addr,
       '--allow-insecure-entitlement', 'security.insecure',
@@ -141,20 +192,6 @@ async function startBuildkitd(parallelism: number): Promise<string> {
     throw new Error('Timed out waiting for buildkitd to start after 10 seconds');
   } catch (error) {
     core.error('failed to start buildkitd daemon:', error);
-    throw error;
-  }
-}
-
-async function getDiskSize(device: string): Promise<number> {
-  try {
-    const {stdout} = await execAsync(`sudo lsblk -b -n -o SIZE ${device}`);
-    const sizeInBytes = parseInt(stdout.trim(), 10);
-    if (isNaN(sizeInBytes)) {
-      throw new Error('Failed to parse disk size');
-    }
-    return sizeInBytes;
-  } catch (error) {
-    console.error(`Error getting disk size: ${error.message}`);
     throw error;
   }
 }
