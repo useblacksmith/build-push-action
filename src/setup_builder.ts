@@ -229,7 +229,7 @@ export async function startAndConfigureBuildkitd(parallelism: number): Promise<s
 }
 
 /**
- * Prunes buildkit cache data older than 14 days.
+ * Prunes buildkit cache data older than 7 days.
  * We don't specify any keep bytes here since we are
  * handling the ceph volume size limits ourselves in
  * the VM Agent.
@@ -237,8 +237,8 @@ export async function startAndConfigureBuildkitd(parallelism: number): Promise<s
  */
 export async function pruneBuildkitCache(): Promise<void> {
   try {
-    const fourteenDaysInHours = 14 * 24;
-    await execAsync(`sudo buildctl --addr ${BUILDKIT_DAEMON_ADDR} prune --keep-duration ${fourteenDaysInHours}h --all`);
+    const sevenDaysInHours = 7 * 24;
+    await execAsync(`sudo buildctl --addr ${BUILDKIT_DAEMON_ADDR} prune --keep-duration ${sevenDaysInHours}h --all`);
     core.debug('Successfully pruned buildkit cache');
   } catch (error) {
     core.warning(`Error pruning buildkit cache: ${error.message}`);
@@ -272,7 +272,11 @@ export async function setupStickyDisk(dockerfilePath: string): Promise<{device: 
     await maybeFormatBlockDevice(device);
     buildResponse = await reporter.reportBuild(dockerfilePath);
     await execAsync(`sudo mkdir -p ${mountPoint}`);
-    await execAsync(`sudo mount ${device} ${mountPoint}`);
+    // Using noatime and nodiratime reduces metadata writes to the ceph volume.
+    // dioread_nolock improves read performance by disabling inode locking.
+    // data=writeback improves performance for this network-backed volume.
+    // barrier=0 disables write barriers, improving write performance.
+    await execAsync(`sudo mount -o noatime,nodiratime,dioread_nolock,data=writeback,barrier=0 ${device} ${mountPoint}`);
     core.debug(`${device} has been mounted to ${mountPoint}`);
     core.info('Successfully obtained sticky disk');
 
