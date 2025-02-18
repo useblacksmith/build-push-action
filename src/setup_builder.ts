@@ -147,6 +147,19 @@ export async function startBuildkitd(parallelism: number, addr: string): Promise
   }
 }
 
+
+
+export async function queueDockerJob(tailscaleHostname: string): Promise<void> {
+  const client = await reporter.createBlacksmithAgentClient();
+  await client.queueDockerJob(
+    {
+      jobName: process.env.GITHUB_JOB || '',
+      tailscaleHostname: tailscaleHostname,
+      vmId: process.env.VM_ID || ''
+    }
+  );
+}
+
 export async function getStickyDisk(options?: {signal?: AbortSignal}): Promise<{expose_id: string; device: string}> {
   const client = await reporter.createBlacksmithAgentClient();
 
@@ -232,8 +245,40 @@ export async function startAndConfigureBuildkitd(parallelism: number, platforms?
   core.debug(`buildkitd daemon started at addr ${addr}`);
 
   if (platforms && platforms.length > 1) {
-    // TODO(adityamaru): Queue docker job for multi-platform build with a well known tailscale hostname.
-    // TODO(adityamaru): Wait until the VM joins the tailnet.
+    // Create a tailscale hostname for the remote docker worker.
+    const vmId = process.env.VM_ID || '';
+    const remoteHostname = `ts-remote-docker-${vmId}`;
+    await queueDockerJob(remoteHostname);
+
+    // Wait for up to 30s for the remote VM to show up in the tailnet.
+    const startTimeVmReady = Date.now();
+    const timeoutVmReady = 30000;
+
+    while (Date.now() - startTimeVmReady < timeoutVmReady) {
+      try {
+        const {stdout} = await execAsync('sudo tailscale status');
+        if (stdout.includes(remoteHostname)) {
+          core.debug(`Found remote VM ${remoteHostname} in tailnet`);
+          break;
+        }
+        core.debug(`Remote VM ${remoteHostname} not found in tailnet yet, retrying...`);
+      } catch (error) {
+        core.debug(`Error checking tailscale status: ${error.message}`);
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    // Final check after timeout
+    try {
+      const {stdout} = await execAsync('sudo tailscale status');
+      if (!stdout.includes(remoteHostname)) {
+        core.setFailed(`Remote VM ${remoteHostname} did not join tailnet within 30s timeout`);
+        throw new Error(`Remote VM ${remoteHostname} did not join tailnet within 30s timeout`);
+      }
+    } catch (error) {
+      core.setFailed(`Error checking tailscale status: ${error.message}`);
+      throw error;
+    }
   }
 
   // Check that buildkit instance is ready by querying workers for up to 30s
