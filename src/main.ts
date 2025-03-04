@@ -20,12 +20,53 @@ import * as context from './context';
 import {promisify} from 'util';
 import {exec} from 'child_process';
 import * as reporter from './reporter';
-import {setupStickyDisk, startAndConfigureBuildkitd, getNumCPUs, leaveTailnet} from './setup_builder';
+import {setupStickyDisk, startAndConfigureBuildkitd, getNumCPUs} from './setup_builder';
 import {Metric_MetricType} from '@buf/blacksmith_vm-agent.bufbuild_es/stickydisk/v1/stickydisk_pb';
 
 const buildxVersion = 'v0.17.0';
 const mountPoint = '/var/lib/buildkit';
 const execAsync = promisify(exec);
+
+async function joinTailnet(): Promise<void> {
+  const token = process.env.BLACKSMITH_TAILSCALE_TOKEN;
+  if (!token || token === 'unset') {
+    core.debug('BLACKSMITH_TAILSCALE_TOKEN environment variable not set, skipping tailnet join');
+    return;
+  }
+
+  try {
+    await execAsync(`sudo tailscale up --authkey=${token} --hostname=${process.env.VM_ID}`);
+
+    core.info('Successfully joined tailnet');
+  } catch (error) {
+    throw new Error(`Failed to join tailnet: ${error.message}`);
+  }
+}
+
+export async function leaveTailnet(): Promise<void> {
+  try {
+    // Check if we're part of a tailnet before trying to leave
+    try {
+      const {stdout} = await execAsync('sudo tailscale status');
+      if (stdout.trim() !== '') {
+        await execAsync('sudo tailscale down');
+        core.debug('Successfully left tailnet.');
+      } else {
+        core.debug('Not part of a tailnet, skipping leave.');
+      }
+    } catch (error: unknown) {
+      // Type guard for ExecException which has the code property
+      if (error && typeof error === 'object' && 'code' in error && error.code === 1) {
+        core.debug('Not part of a tailnet, skipping leave.');
+        return;
+      }
+      // Any other exit code indicates a real error
+      throw error;
+    }
+  } catch (error) {
+    core.warning(`Error leaving tailnet: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 async function setupBuildx(version: string, toolkit: Toolkit): Promise<void> {
   let toolPath;
@@ -70,6 +111,8 @@ async function setupBuildx(version: string, toolkit: Toolkit): Promise<void> {
  */
 export async function startBlacksmithBuilder(inputs: context.Inputs): Promise<{addr: string | null; buildId: string | null; exposeId: string}> {
   try {
+    await joinTailnet();
+
     const dockerfilePath = context.getDockerfilePath(inputs);
     if (!dockerfilePath) {
       throw new Error('Failed to resolve dockerfile path');
@@ -81,7 +124,7 @@ export async function startBlacksmithBuilder(inputs: context.Inputs): Promise<{a
     const parallelism = await getNumCPUs();
 
     const buildkitdStartTime = Date.now();
-    const buildkitdAddr = await startAndConfigureBuildkitd(parallelism, inputs.platforms);
+    const buildkitdAddr = await startAndConfigureBuildkitd(parallelism);
     const buildkitdDurationMs = Date.now() - buildkitdStartTime;
     await reporter.reportMetric(Metric_MetricType.BPA_BUILDKITD_READY_DURATION_MS, buildkitdDurationMs);
 
@@ -102,8 +145,6 @@ export async function startBlacksmithBuilder(inputs: context.Inputs): Promise<{a
 
     core.warning(`${errorMessage}. Falling back to a local build.`);
     return {addr: null, buildId: null, exposeId: ''};
-  } finally {
-    await leaveTailnet();
   }
 }
 

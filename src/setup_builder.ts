@@ -10,16 +10,6 @@ const BUILDKIT_DAEMON_ADDR = 'tcp://127.0.0.1:1234';
 const mountPoint = '/var/lib/buildkit';
 const execAsync = promisify(exec);
 
-export async function getTailscaleIP(): Promise<string | null> {
-  try {
-    const {stdout} = await execAsync('tailscale ip -4');
-    return stdout.trim();
-  } catch (error) {
-    core.debug(`Error getting tailscale IP: ${error.message}`);
-    return null;
-  }
-}
-
 async function maybeFormatBlockDevice(device: string): Promise<string> {
   try {
     // Check if device is formatted with ext4
@@ -62,11 +52,11 @@ export async function getNumCPUs(): Promise<number> {
   }
 }
 
-async function writeBuildkitdTomlFile(parallelism: number, addr: string): Promise<void> {
+async function writeBuildkitdTomlFile(parallelism: number): Promise<void> {
   const jsonConfig: TOML.JsonMap = {
     root: '/var/lib/buildkit',
     grpc: {
-      address: [addr]
+      address: [BUILDKIT_DAEMON_ADDR]
     },
     registry: {
       'docker.io': {
@@ -105,12 +95,13 @@ async function writeBuildkitdTomlFile(parallelism: number, addr: string): Promis
   }
 }
 
-export async function startBuildkitd(parallelism: number, addr: string): Promise<string> {
+async function startBuildkitd(parallelism: number): Promise<string> {
   try {
-    await writeBuildkitdTomlFile(parallelism, addr);
+    await writeBuildkitdTomlFile(parallelism);
+    const addr = BUILDKIT_DAEMON_ADDR;
 
     const logStream = fs.createWriteStream('buildkitd.log');
-    const buildkitd = spawn('sudo', ['buildkitd', '--debug', '--config=buildkitd.toml', '--allow-insecure-entitlement', 'security.insecure', '--allow-insecure-entitlement', 'network.host'], {
+    const buildkitd = spawn('sudo', ['buildkitd', '--debug', '--addr', addr, '--allow-insecure-entitlement', 'security.insecure', '--config=buildkitd.toml', '--allow-insecure-entitlement', 'network.host'], {
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
@@ -147,6 +138,20 @@ export async function startBuildkitd(parallelism: number, addr: string): Promise
   }
 }
 
+async function getDiskSize(device: string): Promise<number> {
+  try {
+    const {stdout} = await execAsync(`sudo lsblk -b -n -o SIZE ${device}`);
+    const sizeInBytes = parseInt(stdout.trim(), 10);
+    if (isNaN(sizeInBytes)) {
+      throw new Error('Failed to parse disk size');
+    }
+    return sizeInBytes;
+  } catch (error) {
+    console.error(`Error getting disk size: ${error.message}`);
+    throw error;
+  }
+}
+
 export async function getStickyDisk(options?: {signal?: AbortSignal}): Promise<{expose_id: string; device: string}> {
   const client = await reporter.createBlacksmithAgentClient();
 
@@ -176,75 +181,14 @@ export async function getStickyDisk(options?: {signal?: AbortSignal}): Promise<{
   };
 }
 
-export async function joinTailnet(): Promise<void> {
-  const token = process.env.BLACKSMITH_TAILSCALE_TOKEN;
-  if (!token || token === 'unset') {
-    core.debug('BLACKSMITH_TAILSCALE_TOKEN environment variable not set, skipping tailnet join');
-    return;
-  }
-
-  try {
-    await execAsync(`sudo tailscale up --authkey=${token} --hostname=${process.env.VM_ID}`);
-
-    core.info('Successfully joined tailnet');
-  } catch (error) {
-    throw new Error(`Failed to join tailnet: ${error.message}`);
-  }
-}
-
-export async function leaveTailnet(): Promise<void> {
-  try {
-    // Check if we're part of a tailnet before trying to leave
-    try {
-      const {stdout} = await execAsync('sudo tailscale status');
-      if (stdout.trim() !== '') {
-        await execAsync('sudo tailscale down');
-        core.debug('Successfully left tailnet.');
-      } else {
-        core.debug('Not part of a tailnet, skipping leave.');
-      }
-    } catch (error: unknown) {
-      // Type guard for ExecException which has the code property
-      if (error && typeof error === 'object' && 'code' in error && error.code === 1) {
-        core.debug('Not part of a tailnet, skipping leave.');
-        return;
-      }
-      // Any other exit code indicates a real error
-      throw error;
-    }
-  } catch (error) {
-    core.warning(`Error leaving tailnet: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
 // buildkitdTimeoutMs states the max amount of time this action will wait for the buildkitd
 // daemon to start have its socket ready. It also additionally governs how long we will wait for
 // the buildkitd workers to be ready.
 const buildkitdTimeoutMs = 30000;
 
-export async function startAndConfigureBuildkitd(parallelism: number, platforms?: string[]): Promise<string> {
-  // For multi-platform builds, we need to use the tailscale IP
-  let buildkitdAddr = BUILDKIT_DAEMON_ADDR;
-
-  // If we are doing a multi-platform build, we need to join the tailnet and bind buildkitd to the tailscale IP.
-  // We do this so that the remote VM can join the same buildkitd cluster as a worker.
-  if (platforms && platforms.length > 1) {
-    await joinTailnet();
-    const tailscaleIP = await getTailscaleIP();
-    if (!tailscaleIP) {
-      throw new Error('Failed to get tailscale IP for multi-platform build');
-    }
-    buildkitdAddr = `tcp://${tailscaleIP}:1234`;
-    core.info(`Using tailscale IP for multi-platform build: ${buildkitdAddr}`);
-  }
-
-  const addr = await startBuildkitd(parallelism, buildkitdAddr);
-  core.debug(`buildkitd daemon started at addr ${addr}`);
-
-  if (platforms && platforms.length > 1) {
-    // TODO(adityamaru): Queue docker job for multi-platform build with a well known tailscale hostname.
-    // TODO(adityamaru): Wait until the VM joins the tailnet.
-  }
+export async function startAndConfigureBuildkitd(parallelism: number): Promise<string> {
+  const buildkitdAddr = await startBuildkitd(parallelism);
+  core.debug(`buildkitd daemon started at addr ${buildkitdAddr}`);
 
   // Check that buildkit instance is ready by querying workers for up to 30s
   const startTimeBuildkitReady = Date.now();
@@ -252,12 +196,10 @@ export async function startAndConfigureBuildkitd(parallelism: number, platforms?
 
   while (Date.now() - startTimeBuildkitReady < timeoutBuildkitReady) {
     try {
-      const {stdout} = await execAsync(`sudo buildctl --addr ${addr} debug workers`);
+      const {stdout} = await execAsync(`sudo buildctl --addr ${BUILDKIT_DAEMON_ADDR} debug workers`);
       const lines = stdout.trim().split('\n');
-      // For multi-platform builds, we need at least 2 workers
-      const requiredWorkers = platforms && platforms.length > 1 ? 2 : 1;
-      if (lines.length > requiredWorkers) {
-        core.info(`Found ${lines.length - 1} workers, required ${requiredWorkers}`);
+      if (lines.length > 1) {
+        // Check if we have output lines beyond the header
         break;
       }
     } catch (error) {
@@ -268,11 +210,10 @@ export async function startAndConfigureBuildkitd(parallelism: number, platforms?
 
   // Final check after timeout.
   try {
-    const {stdout} = await execAsync(`sudo buildctl --addr ${addr} debug workers`);
+    const {stdout} = await execAsync(`sudo buildctl --addr ${BUILDKIT_DAEMON_ADDR} debug workers`);
     const lines = stdout.trim().split('\n');
-    const requiredWorkers = platforms && platforms.length > 1 ? 2 : 1;
-    if (lines.length <= requiredWorkers) {
-      throw new Error(`buildkit workers not ready after ${buildkitdTimeoutMs}ms timeout. Found ${lines.length - 1} workers, required ${requiredWorkers}`);
+    if (lines.length <= 1) {
+      throw new Error('buildkit workers not ready after 15s timeout');
     }
   } catch (error) {
     core.warning(`Error checking buildkit workers: ${error.message}`);
@@ -284,7 +225,7 @@ export async function startAndConfigureBuildkitd(parallelism: number, platforms?
     core.warning(`Background cache pruning failed: ${error.message}`);
   });
 
-  return addr;
+  return buildkitdAddr;
 }
 
 /**
