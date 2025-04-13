@@ -196,8 +196,8 @@ export async function getStickyDisk(options?: {signal?: AbortSignal}): Promise<{
     }
   );
   return {
-    expose_id: response.exposeId || '',
-    device: response.diskIdentifier || ''
+    expose_id: (response as {exposeId: string}).exposeId || '',
+    device: (response as {diskIdentifier: string}).diskIdentifier || ''
   };
 }
 
