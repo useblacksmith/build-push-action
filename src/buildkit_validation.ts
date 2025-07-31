@@ -59,35 +59,3 @@ export async function validateBuildkitState(): Promise<boolean> {
     return false;
   }
 }
-
-/**
- * Attempts to start buildkitd temporarily to check database integrity.
- * This is a more thorough check but takes longer.
- * 
- * @returns true if databases can be read successfully
- */
-export async function validateBuildkitDatabases(): Promise<boolean> {
-  try {
-    // Start buildkitd in a way that just validates databases
-    const buildkitdProcess = await execAsync(
-      'timeout 5s sudo buildkitd --debug --addr tcp://127.0.0.1:12345 2>&1 || true'
-    );
-    
-    // Check if it panicked with database errors
-    if (buildkitdProcess.stdout.includes('panic:') || 
-        buildkitdProcess.stdout.includes('assertion failed') ||
-        buildkitdProcess.stdout.includes('corrupted')) {
-      core.error('Buildkit database corruption detected during validation');
-      return false;
-    }
-    
-    // Kill any remaining buildkitd process
-    await execAsync('sudo pkill -9 buildkitd || true');
-    
-    return true;
-  } catch (error) {
-    core.debug(`Database validation check failed: ${error.message}`);
-    // If the check fails, assume databases might be okay
-    return true;
-  }
-}
