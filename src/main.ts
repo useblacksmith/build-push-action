@@ -392,8 +392,9 @@ actionsToolkit.run(
     }
 
     await core.group('Cleaning up Blacksmith builder', async () => {
+      let cleanupError: Error | undefined;
+      let exportRes;
       try {
-        let exportRes;
         if (!buildError) {
           const buildxHistory = new BuildxHistory();
           exportRes = await buildxHistory.export({
@@ -421,14 +422,18 @@ actionsToolkit.run(
               core.info('Shutdown buildkitd gracefully');
             } catch (shutdownError) {
               // If buildkitd didn't shutdown gracefully, we should NOT commit the sticky disk
-              core.error(`Buildkitd shutdown failed: ${shutdownError.message}`);
-              throw new Error('Cannot commit sticky disk - buildkitd did not shutdown cleanly');
+              cleanupError = new Error(`Cannot commit sticky disk - buildkitd did not shutdown cleanly: ${shutdownError.message}`);
+              core.error(cleanupError.message);
+              throw cleanupError;
             }
           } else {
             core.debug('No buildkitd process found running');
           }
         } catch (error) {
-          if (error.code === 1) {
+          if (error.message?.includes('Cannot commit sticky disk')) {
+            // Re-throw shutdown errors
+            throw error;
+          } else if (error.code === 1) {
             // pgrep returns non-zero if no processes found, which is fine
             core.debug('No buildkitd process found running');
           } else {
@@ -438,11 +443,8 @@ actionsToolkit.run(
 
         await leaveTailnet();
         try {
-          // Multiple syncs to ensure all writes are flushed before unmounting
+          // Sync before unmounting to ensure all writes are flushed
           await execAsync('sync');
-          await new Promise(resolve => setTimeout(resolve, 200));
-          await execAsync('sync');
-          
           const {stdout: mountOutput} = await execAsync(`mount | grep ${mountPoint}`);
           if (mountOutput) {
             for (let attempt = 1; attempt <= 3; attempt++) {
@@ -471,7 +473,7 @@ actionsToolkit.run(
         }
 
         if (builderInfo.addr) {
-          if (!buildError) {
+          if (!buildError && !cleanupError) {
             // Validate buildkit state before committing
             const isStateValid = await validateBuildkitState();
             if (!isStateValid) {
@@ -486,14 +488,16 @@ actionsToolkit.run(
               throw commitError;
             }
           } else {
-            // Don't commit the sticky disk if the build failed
-            core.warning('Build failed - not committing sticky disk to prevent corruption');
+            // Don't commit the sticky disk if the build failed or cleanup failed
+            const reason = buildError ? 'Build failed' : 'Cleanup failed';
+            core.warning(`${reason} - not committing sticky disk to prevent corruption`);
             await reporter.reportBuildFailed(builderInfo.buildId, buildDurationSeconds, builderInfo.exposeId);
           }
         }
       } catch (error) {
         core.warning(`Error during Blacksmith builder shutdown: ${error.message}`);
         await reporter.reportBuildPushActionFailure(error, 'shutting down blacksmith builder');
+        throw error; // Re-throw to fail the workflow
       } finally {
         if (buildError) {
           try {
@@ -548,11 +552,8 @@ actionsToolkit.run(
         }
 
         try {
-          // Multiple syncs to ensure all writes are flushed before unmounting
+          // Sync before unmounting to ensure all writes are flushed
           await execAsync('sync');
-          await new Promise(resolve => setTimeout(resolve, 200));
-          await execAsync('sync');
-          
           const {stdout: mountOutput} = await execAsync(`mount | grep ${mountPoint}`);
           if (mountOutput) {
             for (let attempt = 1; attempt <= 3; attempt++) {
@@ -675,8 +676,6 @@ export async function shutdownBuildkitd(): Promise<void> {
     // CRITICAL: Sync after buildkitd exits to flush all database writes
     core.debug('Syncing filesystem after buildkitd shutdown...');
     await execAsync('sync');
-    // Give kernel time to complete the sync
-    await new Promise(resolve => setTimeout(resolve, 500));
     
   } catch (error) {
     core.error('error shutting down buildkitd process:', error);

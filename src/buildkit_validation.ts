@@ -53,9 +53,6 @@ export async function validateBuildkitState(): Promise<boolean> {
       }
     }
 
-    // Final sync to ensure everything is flushed
-    await execAsync('sync');
-    
     return true;
   } catch (error) {
     core.error(`Error validating buildkit state: ${error.message}`);

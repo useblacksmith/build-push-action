@@ -7,8 +7,6 @@ import {createClient} from '@connectrpc/connect';
 import {createGrpcTransport} from '@connectrpc/connect-node';
 import {StickyDiskService} from '@buf/blacksmith_vm-agent.connectrpc_es/stickydisk/v1/stickydisk_connect';
 import {Metric, Metric_MetricType} from '@buf/blacksmith_vm-agent.bufbuild_es/stickydisk/v1/stickydisk_pb';
-import {exec} from 'child_process';
-import {promisify} from 'util';
 
 // Configure base axios instance for Blacksmith API.
 const createBlacksmithAPIClient = () => {
@@ -66,14 +64,6 @@ export async function reportBuildCompleted(exportRes?: ExportRecordResponse, bla
   if (!blacksmithDockerBuildId) {
     core.warning('No docker build ID found, skipping build completion report');
     return;
-  }
-
-  // Add a final sync before committing to ensure all writes are persisted
-  try {
-    await promisify(exec)('sync');
-    core.debug('Synced filesystem before committing sticky disk');
-  } catch (e) {
-    core.debug('Failed to sync before commit: ' + e);
   }
 
   try {
