@@ -522,6 +522,7 @@ actionsToolkit.run(
   // post
   async () => {
     await core.group('Final cleanup', async () => {
+      let cleanupError: Error | undefined;
       try {
         try {
           const {stdout} = await execAsync('pgrep buildkitd');
@@ -535,8 +536,15 @@ actionsToolkit.run(
               core.warning(`Error pruning BuildKit cache: ${error.message}`);
             }
 
-            await shutdownBuildkitd();
-            core.info('Shutdown buildkitd');
+            try {
+              await shutdownBuildkitd();
+              core.info('Shutdown buildkitd gracefully');
+            } catch (shutdownError) {
+              // If buildkitd didn't shutdown gracefully, we should NOT commit the sticky disk
+              cleanupError = new Error(`Cannot commit sticky disk - buildkitd did not shutdown cleanly in post: ${shutdownError.message}`);
+              core.error(cleanupError.message);
+              // Don't throw here, continue with unmount but track the error
+            }
           }
         } catch (error) {
           if (error.code === 1) {
@@ -583,13 +591,22 @@ actionsToolkit.run(
         // 5. Commit sticky disk if the builder was booted in setup-only mode.
         // If the builder was not booted in setup-only mode, the sticky disk was committed as part
         // of the main routine.
-        if (stateHelper.getSetupOnly()) {
+        if (stateHelper.getSetupOnly() && !cleanupError) {
           core.info('Committing sticky disk in post cleanup as setup-only mode was enabled');
           if (stateHelper.getExposeId() !== '') {
+            // Validate buildkit state before committing
+            const isStateValid = await validateBuildkitState();
+            if (!isStateValid) {
+              core.error('Buildkit state validation failed - not committing sticky disk');
+              throw new Error('Buildkit state validation failed - potential corruption detected');
+            }
+            
             await reporter.commitStickyDisk(stateHelper.getExposeId());
           } else {
             core.warning('Expose ID not found in state, skipping sticky disk commit');
           }
+        } else if (stateHelper.getSetupOnly() && cleanupError) {
+          core.warning('Not committing sticky disk due to cleanup errors');
         }
       } catch (error) {
         core.warning(`Error during final cleanup: ${error.message}`);
