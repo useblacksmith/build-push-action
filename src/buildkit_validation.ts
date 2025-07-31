@@ -3,7 +3,6 @@ import {exec} from 'child_process';
 import {promisify} from 'util';
 
 const execAsync = promisify(exec);
-const BUILDKIT_DAEMON_ADDR = 'tcp://127.0.0.1:1234';
 
 /**
  * Validates buildkit state before committing sticky disk.
