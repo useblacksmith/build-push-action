@@ -35,8 +35,6 @@ jest.mock('../setup_builder', () => ({
   startAndConfigureBuildkitd: jest.fn(),
   setupStickyDisk: jest.fn(),
   getNumCPUs: jest.fn().mockResolvedValue(4),
-  leaveTailnet: jest.fn().mockResolvedValue(undefined),
-  getTailscaleIP: jest.fn()
 }));
 
 describe('startBlacksmithBuilder', () => {

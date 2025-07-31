@@ -20,7 +20,7 @@ import * as context from './context';
 import {promisify} from 'util';
 import {exec} from 'child_process';
 import * as reporter from './reporter';
-import {setupStickyDisk, startAndConfigureBuildkitd, getNumCPUs, leaveTailnet, pruneBuildkitCache} from './setup_builder';
+import {setupStickyDisk, startAndConfigureBuildkitd, getNumCPUs, pruneBuildkitCache} from './setup_builder';
 import {Metric_MetricType} from '@buf/blacksmith_vm-agent.bufbuild_es/stickydisk/v1/stickydisk_pb';
 import {validateBuildkitState} from './buildkit_validation';
 
@@ -135,8 +135,6 @@ export async function startBlacksmithBuilder(inputs: context.Inputs): Promise<{a
 
     core.warning(`${errorMessage}. Falling back to a local build.`);
     return {addr: null, buildId: null, exposeId: ''};
-  } finally {
-    await leaveTailnet();
   }
 }
 
@@ -441,7 +439,6 @@ actionsToolkit.run(
           }
         }
 
-        await leaveTailnet();
         try {
           // Sync before unmounting to ensure all writes are flushed
           await execAsync('sync');
@@ -526,8 +523,6 @@ actionsToolkit.run(
   async () => {
     await core.group('Final cleanup', async () => {
       try {
-        await leaveTailnet();
-
         try {
           const {stdout} = await execAsync('pgrep buildkitd');
           if (stdout.trim()) {

@@ -11,15 +11,6 @@ const BUILDKIT_DAEMON_ADDR = 'tcp://127.0.0.1:1234';
 const mountPoint = '/var/lib/buildkit';
 const execAsync = promisify(exec);
 
-export async function getTailscaleIP(): Promise<string | null> {
-  try {
-    const {stdout} = await execAsync('tailscale ip -4');
-    return stdout.trim();
-  } catch (error) {
-    core.debug(`Error getting tailscale IP: ${error.message}`);
-    return null;
-  }
-}
 
 async function maybeFormatBlockDevice(device: string): Promise<string> {
   try {
@@ -202,46 +193,6 @@ export async function getStickyDisk(options?: {signal?: AbortSignal}): Promise<{
   };
 }
 
-export async function joinTailnet(): Promise<void> {
-  const token = process.env.BLACKSMITH_TAILSCALE_TOKEN;
-  if (!token || token === 'unset') {
-    core.debug('BLACKSMITH_TAILSCALE_TOKEN environment variable not set, skipping tailnet join');
-    return;
-  }
-
-  try {
-    await execAsync(`sudo tailscale up --authkey=${token} --hostname=${process.env.BLACKSMITH_VM_ID}`);
-
-    core.info('Successfully joined tailnet');
-  } catch (error) {
-    throw new Error(`Failed to join tailnet: ${error.message}`);
-  }
-}
-
-export async function leaveTailnet(): Promise<void> {
-  try {
-    // Check if we're part of a tailnet before trying to leave
-    try {
-      const {stdout} = await execAsync('sudo tailscale status');
-      if (stdout.trim() !== '') {
-        await execAsync('sudo tailscale down');
-        core.debug('Successfully left tailnet.');
-      } else {
-        core.debug('Not part of a tailnet, skipping leave.');
-      }
-    } catch (error: unknown) {
-      // Type guard for ExecException which has the code property
-      if (error && typeof error === 'object' && 'code' in error && error.code === 1) {
-        core.debug('Not part of a tailnet, skipping leave.');
-        return;
-      }
-      // Any other exit code indicates a real error
-      throw error;
-    }
-  } catch (error) {
-    core.warning(`Error leaving tailnet: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
 
 // buildkitdTimeoutMs states the max amount of time this action will wait for the buildkitd
 // daemon to start have its socket ready. It also additionally governs how long we will wait for
@@ -249,21 +200,7 @@ export async function leaveTailnet(): Promise<void> {
 const buildkitdTimeoutMs = 30000;
 
 export async function startAndConfigureBuildkitd(parallelism: number, setupOnly: boolean, platforms?: string[]): Promise<string> {
-  // For multi-platform builds, we need to use the tailscale IP
-  let buildkitdAddr = BUILDKIT_DAEMON_ADDR;
-  const nativeMultiPlatformBuildsEnabled = false && (platforms?.length ?? 0 > 1);
-
-  // If we are doing a multi-platform build, we need to join the tailnet and bind buildkitd to the tailscale IP.
-  // We do this so that the remote VM can join the same buildkitd cluster as a worker.
-  if (nativeMultiPlatformBuildsEnabled) {
-    await joinTailnet();
-    const tailscaleIP = await getTailscaleIP();
-    if (!tailscaleIP) {
-      throw new Error('Failed to get tailscale IP for multi-platform build');
-    }
-    buildkitdAddr = `tcp://${tailscaleIP}:1234`;
-    core.info(`Using tailscale IP for multi-platform build: ${buildkitdAddr}`);
-  }
+  const buildkitdAddr = BUILDKIT_DAEMON_ADDR;
 
   const addr = await startBuildkitd(parallelism, buildkitdAddr, setupOnly);
   core.debug(`buildkitd daemon started at addr ${addr}`);
@@ -276,10 +213,10 @@ export async function startAndConfigureBuildkitd(parallelism: number, setupOnly:
     try {
       const {stdout} = await execAsync(`sudo buildctl --addr ${addr} debug workers`);
       const lines = stdout.trim().split('\n');
-      // For multi-platform builds, we need at least 2 workers
-      const requiredWorkers = nativeMultiPlatformBuildsEnabled ? 2 : 1;
+      // We need at least 1 worker
+      const requiredWorkers = 1;
       if (lines.length > requiredWorkers) {
-        core.info(`Found ${lines.length - 1} workers, required ${requiredWorkers}`);
+        core.info(`Found ${lines.length - 1} workers`);
         break;
       }
     } catch (error) {
@@ -292,9 +229,9 @@ export async function startAndConfigureBuildkitd(parallelism: number, setupOnly:
   try {
     const {stdout} = await execAsync(`sudo buildctl --addr ${addr} debug workers`);
     const lines = stdout.trim().split('\n');
-    const requiredWorkers = nativeMultiPlatformBuildsEnabled ? 2 : 1;
+    const requiredWorkers = 1;
     if (lines.length <= requiredWorkers) {
-      throw new Error(`buildkit workers not ready after ${buildkitdTimeoutMs}ms timeout. Found ${lines.length - 1} workers, required ${requiredWorkers}`);
+      throw new Error(`buildkit workers not ready after ${buildkitdTimeoutMs}ms timeout. Found ${lines.length - 1} workers`);
     }
   } catch (error) {
     core.warning(`Error checking buildkit workers: ${error.message}`);
