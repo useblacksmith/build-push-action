@@ -248,9 +248,30 @@ actionsToolkit.run(
         let exportRes;
         if (!buildError) {
           const buildxHistory = new BuildxHistory();
-          exportRes = await buildxHistory.export({
-            refs: ref ? [ref] : []
+
+          // Create a timeout promise that rejects after 30 seconds
+          let timeoutId: NodeJS.Timeout | undefined;
+          const exportTimeout = new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error('Export operation timed out after 30 seconds')), 30000);
           });
+
+          try {
+            // Race between the export operation and the timeout
+            exportRes = await Promise.race([
+              buildxHistory.export({
+                refs: ref ? [ref] : []
+              }),
+              exportTimeout
+            ]);
+            // Clear the timeout if export completes successfully
+            if (timeoutId) clearTimeout(timeoutId);
+          } catch (exportError) {
+            // Clear the timeout on error as well
+            if (timeoutId) clearTimeout(timeoutId);
+            // Log the error but continue with reporting
+            core.warning(`Build export failed: ${(exportError as Error).message}`);
+            core.info('Continuing with build reporting without export data');
+          }
         }
 
         if (buildId && isBlacksmithBuilder) {
