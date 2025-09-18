@@ -57,6 +57,7 @@ export interface Inputs {
   target: string;
   ulimit: string[];
   'github-token': string;
+  estargz: boolean;
 }
 
 export async function getInputs(): Promise<Inputs> {
@@ -93,7 +94,8 @@ export async function getInputs(): Promise<Inputs> {
     tags: Util.getInputList('tags'),
     target: core.getInput('target'),
     ulimit: Util.getInputList('ulimit', {ignoreComma: true}),
-    'github-token': core.getInput('github-token')
+    'github-token': core.getInput('github-token'),
+    estargz: core.getBooleanInput('estargz')
   };
 }
 
@@ -208,10 +210,32 @@ async function getBuildArgs(inputs: Inputs, context: string, toolkit: Toolkit): 
     args.push('--no-cache-filter', noCacheFilter);
   });
   await Util.asyncForEach(inputs.outputs, async output => {
-    args.push('--output', output);
+    if (inputs.estargz && inputs.push) {
+      if (output.startsWith('type=registry') || output === 'type=registry') {
+        const estargzOutput = output.includes(',') 
+          ? `${output},compression=estargz,force-compression=true,oci-mediatypes=true`
+          : `${output},compression=estargz,force-compression=true,oci-mediatypes=true`;
+        args.push('--output', estargzOutput);
+      } else {
+        args.push('--output', output);
+      }
+    } else {
+      args.push('--output', output);
+    }
   });
+  
+  if (inputs.estargz && inputs.push && inputs.outputs.length === 0) {
+    args.push('--output', 'type=registry,compression=estargz,force-compression=true,oci-mediatypes=true');
+  }
   if (inputs.platforms.length > 0) {
     args.push('--platform', inputs.platforms.join(','));
+  }
+  if (inputs.estargz) {
+    if (!(await toolkit.buildx.versionSatisfies('>=0.10.0'))) {
+      core.warning("eStargz compression requires buildx >= 0.10.0; the input 'estargz' is ignored.");
+    } else if (!inputs.push) {
+      core.warning("eStargz compression requires push: true; the input 'estargz' is ignored.");
+    }
   }
   if (await toolkit.buildx.versionSatisfies('>=0.10.0')) {
     args.push(...(await getAttestArgs(inputs, toolkit)));

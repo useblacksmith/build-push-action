@@ -108,6 +108,10 @@ inputs:
     description: "GitHub Token used to authenticate against a repository for Git context"
     default: ${{ github.token }}
     required: false
+  estargz:
+    description: "Enable eStargz compression for faster image pulls (requires push: true)"
+    required: false
+    default: 'false'
 
 outputs:
   imageid:
