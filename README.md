@@ -100,6 +100,37 @@ jobs:
           tags: user/app:latest
 ```
 
+### eStargz compression for faster pulls
+
+```yaml
+name: ci
+
+on:
+  push:
+
+jobs:
+  docker:
+    runs-on: blacksmith
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+      -
+        name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      -
+        name: Build and push with eStargz
+        uses: useblacksmith/build-push-action@v1
+        with:
+          context: .
+          push: true
+          tags: user/app:latest
+          estargz: true
+```
+
 ## Examples
 
 * [Multi-platform image](https://docs.docker.com/build/ci/github-actions/multi-platform/)
@@ -190,6 +221,7 @@ The following inputs can be used as `step.with` keys:
 | `target`           | String      | Sets the target stage to build                                                                                                                                                    |
 | `ulimit`           | List        | [Ulimit](https://docs.docker.com/engine/reference/commandline/buildx_build/#ulimit) options (e.g., `nofile=1024:1024`)                                                            |
 | `github-token`     | String      | GitHub Token used to authenticate against a repository for [Git context](#git-context) (default `${{ github.token }}`)                                                            |
+| `estargz`          | Bool        | Enable [eStargz compression](https://github.com/containerd/stargz-snapshotter/blob/main/docs/estargz.md) for faster image pulls (requires `push: true`) (default `false`)        |
 
 ### outputs
 
