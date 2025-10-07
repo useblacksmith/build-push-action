@@ -30,11 +30,11 @@
     "@buf/blacksmith_vm-agent.connectrpc_es": "^1.6.1-20251002224722-c44b45f26c5e.2",
     "@connectrpc/connect": "^1.6.1",
     "@connectrpc/connect-node": "^1.6.1",
-    "@docker/actions-toolkit": "0.37.1",
+    "@docker/actions-toolkit": "0.52.0",
     "@iarna/toml": "^2.2.5",
     "axios-retry": "^4.5.0",
     "execa": "^9.5.2",
-    "form-data": "^4.0.1",
+    "form-data": "^4.0.4",
     "handlebars": "^4.7.7",
     "portfinder": "^1.0.32"
   },
