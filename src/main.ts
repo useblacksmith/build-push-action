@@ -142,6 +142,11 @@ export async function startBlacksmithBuilder(inputs: context.Inputs): Promise<{a
 actionsToolkit.run(
   // main
   async () => {
+    // deprecation warning: this version is no longer maintained.
+    core.warning('⚠️  DEPRECATION WARNING: useblacksmith/build-push-action@v1.2 is no longer maintained.');
+    core.warning('Please upgrade to the newer actions outlined at: https://docs.blacksmith.sh/blacksmith-caching/docker-builds');
+    core.warning('This version will stop receiving updates and bug fixes.');
+    
     await reporter.reportMetric(Metric_MetricType.BPA_FEATURE_USAGE, 1);
     const startedTime = new Date();
     const inputs: context.Inputs = await context.getInputs();
