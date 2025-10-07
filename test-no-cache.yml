@@ -1,0 +1,41 @@
+name: Test No-Cache Option
+on:
+  push:
+    branches: [ test-no-cache ]
+  workflow_dispatch:
+    inputs:
+      no-cache:
+        description: 'Test with no-cache option'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  test-no-cache:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build with no-cache TRUE
+        uses: ./
+        with:
+          context: .
+          file: ./test/Dockerfile
+          no-cache: true
+          push: false
+          load: true
+          tags: test-no-cache:latest
+          
+      - name: Build with no-cache FALSE (cached)
+        uses: ./
+        with:
+          context: .
+          file: ./test/Dockerfile
+          no-cache: false
+          push: false
+          load: true
+          tags: test-cached:latest
