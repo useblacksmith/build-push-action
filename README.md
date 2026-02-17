@@ -61,7 +61,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       -
         name: Build and push
-        uses: useblacksmith/build-push-action@v1
+        uses: useblacksmith/build-push-action@v6
         with:
           push: true
           tags: user/app:latest
@@ -93,7 +93,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       -
         name: Build and push
-        uses: useblacksmith/build-push-action@v1
+        uses: useblacksmith/build-push-action@v6
         with:
           context: .
           push: true
@@ -123,7 +123,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       -
         name: Build and push with eStargz
-        uses: useblacksmith/build-push-action@v1
+        uses: useblacksmith/build-push-action@v6
         with:
           context: .
           push: true
