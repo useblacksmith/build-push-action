@@ -33,9 +33,7 @@ jobs:
           npm config set //buf.build/gen/npm/v1/:_authToken $BUF_TOKEN
 
       - name: Install dependencies
-        run: |
-          npm ci
-          npm install @buf/blacksmith_vm-agent.connectrpc_es@latest
+        run: npm ci
 
       - name: Build
         run: npm run build
