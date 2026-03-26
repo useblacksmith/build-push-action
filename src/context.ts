@@ -1,13 +1,13 @@
 import * as core from '@actions/core';
 import * as handlebars from 'handlebars';
 import * as os from 'os';
-
-import {Build} from '@docker/actions-toolkit/lib/buildx/build';
-import {Context} from '@docker/actions-toolkit/lib/context';
-import {GitHub} from '@docker/actions-toolkit/lib/github';
-import {Toolkit} from '@docker/actions-toolkit/lib/toolkit';
-import {Util} from '@docker/actions-toolkit/lib/util';
 import * as path from 'path';
+
+import {Build} from '@docker/actions-toolkit/lib/buildx/build.js';
+import {Context} from '@docker/actions-toolkit/lib/context.js';
+import {GitHub} from '@docker/actions-toolkit/lib/github/github.js';
+import {Toolkit} from '@docker/actions-toolkit/lib/toolkit.js';
+import {Util} from '@docker/actions-toolkit/lib/util.js';
 
 // Helper function to join paths while avoiding duplication of context path
 function joinNonOverlapping(context: string, filePath: string): string {
@@ -34,6 +34,7 @@ export interface Inputs {
   builder: string;
   'cache-from': string[];
   'cache-to': string[];
+  call: string;
   'cgroup-parent': string;
   context: string;
   file: string;
@@ -68,10 +69,10 @@ export async function getInputs(): Promise<Inputs> {
     attests: Util.getInputList('attests', {ignoreComma: true}),
     'build-args': Util.getInputList('build-args', {ignoreComma: true}),
     'build-contexts': Util.getInputList('build-contexts', {ignoreComma: true}),
-    // We accept the builder input from the user, but we don't respect it.
     builder: core.getInput('builder'),
     'cache-from': Util.getInputList('cache-from', {ignoreComma: true}),
     'cache-to': Util.getInputList('cache-to', {ignoreComma: true}),
+    call: core.getInput('call'),
     'cgroup-parent': core.getInput('cgroup-parent'),
     context: core.getInput('context') || Context.gitContext(),
     file: core.getInput('file'),
@@ -123,25 +124,6 @@ export function getDockerfilePath(inputs: Inputs): string | null {
   }
 }
 
-export function sanitizeInputs(inputs: Inputs) {
-  const res = {};
-  for (const key of Object.keys(inputs)) {
-    if (key === 'github-token') {
-      continue;
-    }
-    const value: string | string[] | boolean = inputs[key];
-    if (typeof value === 'boolean' && value === false) {
-      continue;
-    } else if (Array.isArray(value) && value.length === 0) {
-      continue;
-    } else if (!value) {
-      continue;
-    }
-    res[key] = value;
-  }
-  return res;
-}
-
 export async function getArgs(inputs: Inputs, toolkit: Toolkit): Promise<Array<string>> {
   core.info(`Inputs.context: ${inputs.context}`);
   const context = handlebars.compile(inputs.context)({
@@ -161,9 +143,9 @@ async function getBuildArgs(inputs: Inputs, context: string, toolkit: Toolkit): 
   await Util.asyncForEach(inputs['add-hosts'], async addHost => {
     args.push('--add-host', addHost);
   });
-  if (inputs.allow.length > 0) {
-    args.push('--allow', inputs.allow.join(','));
-  }
+  await Util.asyncForEach(inputs.allow, async allow => {
+    args.push('--allow', allow);
+  });
   if (await toolkit.buildx.versionSatisfies('>=0.12.0')) {
     await Util.asyncForEach(inputs.annotations, async annotation => {
       args.push('--annotation', annotation);
@@ -176,7 +158,12 @@ async function getBuildArgs(inputs: Inputs, context: string, toolkit: Toolkit): 
   });
   if (await toolkit.buildx.versionSatisfies('>=0.8.0')) {
     await Util.asyncForEach(inputs['build-contexts'], async buildContext => {
-      args.push('--build-context', buildContext);
+      args.push(
+        '--build-context',
+        handlebars.compile(buildContext)({
+          defaultContext: Context.gitContext()
+        })
+      );
     });
   } else if (inputs['build-contexts'].length > 0) {
     core.warning("Build contexts are only supported by buildx >= 0.8.0; the input 'build-contexts' is ignored.");
@@ -187,6 +174,12 @@ async function getBuildArgs(inputs: Inputs, context: string, toolkit: Toolkit): 
   await Util.asyncForEach(inputs['cache-to'], async cacheTo => {
     args.push('--cache-to', cacheTo);
   });
+  if (inputs.call) {
+    if (!(await toolkit.buildx.versionSatisfies('>=0.15.0'))) {
+      throw new Error(`Buildx >= 0.15.0 is required to use the call flag.`);
+    }
+    args.push('--call', inputs.call);
+  }
   if (inputs['cgroup-parent']) {
     args.push('--cgroup-parent', inputs['cgroup-parent']);
   }
@@ -256,7 +249,7 @@ async function getBuildArgs(inputs: Inputs, context: string, toolkit: Toolkit): 
     }
   });
   if (inputs['github-token'] && !Build.hasGitAuthTokenSecret(inputs.secrets) && context.startsWith(Context.gitContext())) {
-    args.push('--secret', Build.resolveSecretString(`GIT_AUTH_TOKEN=${inputs['github-token']}`));
+    args.push('--secret', Build.resolveSecretString(`GIT_AUTH_TOKEN.${new URL(GitHub.serverURL).host.trimEnd()}=${inputs['github-token']}`));
   }
   if (inputs['shm-size']) {
     args.push('--shm-size', inputs['shm-size']);
@@ -278,6 +271,9 @@ async function getBuildArgs(inputs: Inputs, context: string, toolkit: Toolkit): 
 
 async function getCommonArgs(inputs: Inputs, toolkit: Toolkit): Promise<Array<string>> {
   const args: Array<string> = [];
+  if (inputs.builder) {
+    args.push('--builder', inputs.builder);
+  }
   if (inputs.load) {
     args.push('--load');
   }
@@ -301,7 +297,6 @@ async function getCommonArgs(inputs: Inputs, toolkit: Toolkit): Promise<Array<st
 
 async function getAttestArgs(inputs: Inputs, toolkit: Toolkit): Promise<Array<string>> {
   const args: Array<string> = [];
-  const builder = await toolkit.builder.inspect();
 
   // check if provenance attestation is set in attests input
   let hasAttestProvenance = false;
@@ -316,7 +311,7 @@ async function getAttestArgs(inputs: Inputs, toolkit: Toolkit): Promise<Array<st
   if (inputs.provenance) {
     args.push('--attest', Build.resolveAttestationAttrs(`type=provenance,${inputs.provenance}`));
     provenanceSet = true;
-  } else if (!hasAttestProvenance && (await toolkit.buildkit.versionSatisfies(builder.name!, '>=0.11.0')) && !Build.hasDockerExporter(inputs.outputs, inputs.load)) {
+  } else if (!hasAttestProvenance && !noDefaultAttestations() && (await toolkit.buildkit.versionSatisfies(inputs.builder, '>=0.11.0')) && !Build.hasDockerExporter(inputs.outputs, inputs.load)) {
     // if provenance not specified in provenance or attests inputs and BuildKit
     // version compatible for attestation, set default provenance. Also needs
     // to make sure user doesn't want to explicitly load the image to docker.
@@ -349,9 +344,12 @@ async function getAttestArgs(inputs: Inputs, toolkit: Toolkit): Promise<Array<st
   return args;
 }
 
-export const tlsClientKeyPath = '/tmp/blacksmith_client_key.pem';
-export const tlsClientCaCertificatePath = '/tmp/blacksmith_client_ca_certificate.pem';
-export const tlsRootCaCertificatePath = '/tmp/blacksmith_root_ca_certificate.pem';
+function noDefaultAttestations(): boolean {
+  if (process.env.BUILDX_NO_DEFAULT_ATTESTATIONS) {
+    return Util.parseBool(process.env.BUILDX_NO_DEFAULT_ATTESTATIONS);
+  }
+  return false;
+}
 
 /**
  * Resolve the platform list that should be passed to `docker buildx create`.

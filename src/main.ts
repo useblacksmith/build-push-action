@@ -1,21 +1,26 @@
+import * as fs from 'fs';
 import * as path from 'path';
-import * as stateHelper from './state-helper';
 import * as core from '@actions/core';
 import * as actionsToolkit from '@docker/actions-toolkit';
 
-import {Buildx} from '@docker/actions-toolkit/lib/buildx/buildx';
-import {History as BuildxHistory} from '@docker/actions-toolkit/lib/buildx/history';
-import {Docker} from '@docker/actions-toolkit/lib/docker/docker';
-import {Exec} from '@docker/actions-toolkit/lib/exec';
-import {GitHub} from '@docker/actions-toolkit/lib/github';
-import {Toolkit} from '@docker/actions-toolkit/lib/toolkit';
-import {Util} from '@docker/actions-toolkit/lib/util';
+import {Buildx} from '@docker/actions-toolkit/lib/buildx/buildx.js';
+import {History as BuildxHistory} from '@docker/actions-toolkit/lib/buildx/history.js';
+import {Context} from '@docker/actions-toolkit/lib/context.js';
+import {Docker} from '@docker/actions-toolkit/lib/docker/docker.js';
+import {Exec} from '@docker/actions-toolkit/lib/exec.js';
+import {GitHub} from '@docker/actions-toolkit/lib/github/github.js';
+import {GitHubArtifact} from '@docker/actions-toolkit/lib/github/artifact.js';
+import {GitHubSummary} from '@docker/actions-toolkit/lib/github/summary.js';
+import {Toolkit} from '@docker/actions-toolkit/lib/toolkit.js';
+import {Util} from '@docker/actions-toolkit/lib/util.js';
 
-import {BuilderInfo} from '@docker/actions-toolkit/lib/types/buildx/builder';
-import {ConfigFile} from '@docker/actions-toolkit/lib/types/docker/docker';
+import {BuilderInfo} from '@docker/actions-toolkit/lib/types/buildx/builder.js';
+import {ConfigFile} from '@docker/actions-toolkit/lib/types/docker/docker.js';
+import {UploadResponse as UploadArtifactResponse} from '@docker/actions-toolkit/lib/types/github/artifact.js';
 
-import * as context from './context';
-import * as reporter from './reporter';
+import * as context from './context.js';
+import * as reporter from './reporter.js';
+import * as stateHelper from './state-helper.js';
 
 async function assertBuildxAvailable(toolkit: Toolkit): Promise<void> {
   if (!(await toolkit.buildx.isAvailable())) {
@@ -61,7 +66,8 @@ actionsToolkit.run(
   async () => {
     const startedTime = new Date();
     const inputs: context.Inputs = await context.getInputs();
-    stateHelper.setInputs(inputs);
+    stateHelper.setSummaryInputs(inputs);
+    core.debug(`inputs: ${JSON.stringify(inputs)}`);
 
     const toolkit = new Toolkit();
 
@@ -87,6 +93,8 @@ actionsToolkit.run(
       await assertBuildxAvailable(toolkit);
     });
 
+    stateHelper.setTmpDir(Context.tmpDir());
+
     let buildId: string | null = null;
     let buildError: Error | undefined;
     let buildDurationSeconds: string | undefined;
@@ -96,11 +104,13 @@ actionsToolkit.run(
 
     try {
       // Check that a builder is available (either from setup-docker-builder or existing)
-      await core.group(`Checking for configured builder`, async () => {
+      await core.group(`Builder info`, async () => {
         try {
-          builder = await toolkit.builder.inspect();
+          builder = await toolkit.builder.inspect(inputs.builder);
+          stateHelper.setBuilderDriver(builder.driver ?? '');
+          stateHelper.setBuilderEndpoint(builder.nodes?.[0]?.endpoint ?? '');
           if (builder) {
-            core.info(`Found configured builder: ${builder.name}`);
+            core.info(JSON.stringify(builder, null, 2));
             // Check if this is a Blacksmith builder
             isBlacksmithBuilder = builder.name ? builder.name.toLowerCase().includes('blacksmith') : false;
             if (!isBlacksmithBuilder) {
@@ -120,10 +130,6 @@ actionsToolkit.run(
           buildId = await reportBuildStart(inputs);
         });
       }
-
-      await core.group(`Builder info`, async () => {
-        core.info(JSON.stringify(builder, null, 2));
-      });
 
       await core.group(`Proxy configuration`, async () => {
         let dockerConfig: ConfigFile | undefined;
@@ -155,10 +161,10 @@ actionsToolkit.run(
       core.debug(`context.getArgs: ${JSON.stringify(args)}`);
 
       const buildCmd = await toolkit.buildx.getCommand(args);
-
       core.debug(`buildCmd.command: ${buildCmd.command}`);
       core.debug(`buildCmd.args: ${JSON.stringify(buildCmd.args)}`);
 
+      let err: Error | undefined;
       const buildStartTime = Date.now();
       await Exec.getExecOutput(buildCmd.command, buildCmd.args, {
         ignoreReturnCode: true,
@@ -170,10 +176,20 @@ actionsToolkit.run(
       }).then(res => {
         buildDurationSeconds = Math.round((Date.now() - buildStartTime) / 1000).toString();
         stateHelper.setDockerBuildDurationSeconds(buildDurationSeconds);
-        if (res.stderr.length > 0 && res.exitCode != 0) {
-          throw Error(`buildx failed with: ${res.stderr.match(/(.*)\s*$/)?.[0]?.trim() ?? 'unknown error'}`);
+        if (res.exitCode != 0) {
+          if (inputs.call && inputs.call === 'check' && res.stdout.length > 0) {
+            // checks warnings are printed to stdout: https://github.com/docker/buildx/pull/2647
+            // take the first line with the message summarizing the warnings
+            err = new Error(res.stdout.split('\n')[0]?.trim());
+          } else if (res.stderr.length > 0) {
+            err = new Error(`buildx failed with: ${res.stderr.match(/(.*)\s*$/)?.[0]?.trim() ?? 'unknown error'}`);
+          }
         }
       });
+
+      if (err) {
+        throw err;
+      }
 
       const imageID = toolkit.buildxBuild.resolveImageID();
       const metadata = toolkit.buildxBuild.resolveMetadata();
@@ -199,7 +215,7 @@ actionsToolkit.run(
       }
 
       await core.group(`Reference`, async () => {
-        ref = await buildRef(toolkit, startedTime, builder?.name);
+        ref = await buildRef(toolkit, startedTime, inputs.builder);
         if (ref) {
           core.info(ref);
           stateHelper.setBuildRef(ref);
@@ -226,12 +242,12 @@ actionsToolkit.run(
       await core.group(`Check build summary support`, async () => {
         if (!buildSummaryEnabled()) {
           core.info('Build summary disabled');
+        } else if (inputs.call && inputs.call !== 'build') {
+          core.info(`Build summary skipped for ${inputs.call} subrequest`);
         } else if (GitHub.isGHES) {
           core.info('Build summary is not yet supported on GHES');
-        } else if (!(await toolkit.buildx.versionSatisfies('>=0.13.0'))) {
-          core.info('Build summary requires Buildx >= 0.13.0');
-        } else if (builder && builder.driver === 'cloud') {
-          core.info('Build summary is not yet supported with Docker Build Cloud');
+        } else if (!(await toolkit.buildx.versionSatisfies('>=0.23.0'))) {
+          core.info('Build summary requires Buildx >= 0.23.0');
         } else if (!ref) {
           core.info('Build summary requires a build reference');
         } else {
@@ -292,7 +308,52 @@ actionsToolkit.run(
     }
   },
   // post
-  async () => {}
+  async () => {
+    if (stateHelper.isSummarySupported) {
+      await core.group(`Generating build summary`, async () => {
+        try {
+          const recordUploadEnabled = buildRecordUploadEnabled();
+          let recordRetentionDays: number | undefined;
+          if (recordUploadEnabled) {
+            recordRetentionDays = buildRecordRetentionDays();
+          }
+
+          const buildxHistory = new BuildxHistory();
+          const exportRes = await buildxHistory.export({
+            refs: stateHelper.buildRef ? [stateHelper.buildRef] : []
+          });
+          core.info(`Build record written to ${exportRes.dockerbuildFilename} (${Util.formatFileSize(exportRes.dockerbuildSize)})`);
+
+          let uploadRes: UploadArtifactResponse | undefined;
+          if (recordUploadEnabled) {
+            uploadRes = await GitHubArtifact.upload({
+              filename: exportRes.dockerbuildFilename,
+              retentionDays: recordRetentionDays
+            });
+          }
+
+          await GitHubSummary.writeBuildSummary({
+            exportRes: exportRes,
+            uploadRes: uploadRes,
+            inputs: stateHelper.summaryInputs,
+            driver: stateHelper.builderDriver,
+            endpoint: stateHelper.builderEndpoint
+          });
+        } catch (e) {
+          core.warning(e.message);
+        }
+      });
+    }
+    if (stateHelper.tmpDir.length > 0) {
+      await core.group(`Removing temp folder ${stateHelper.tmpDir}`, async () => {
+        try {
+          fs.rmSync(stateHelper.tmpDir, {recursive: true});
+        } catch {
+          core.warning(`Failed to remove temp folder ${stateHelper.tmpDir}`);
+        }
+      });
+    }
+  }
 );
 
 async function buildRef(toolkit: Toolkit, since: Date, builder?: string): Promise<string> {
@@ -322,11 +383,26 @@ function buildChecksAnnotationsEnabled(): boolean {
 }
 
 function buildSummaryEnabled(): boolean {
-  if (process.env.DOCKER_BUILD_NO_SUMMARY) {
-    core.warning('DOCKER_BUILD_NO_SUMMARY is deprecated. Set DOCKER_BUILD_SUMMARY to false instead.');
-    return !Util.parseBool(process.env.DOCKER_BUILD_NO_SUMMARY);
-  } else if (process.env.DOCKER_BUILD_SUMMARY) {
+  if (process.env.DOCKER_BUILD_SUMMARY) {
     return Util.parseBool(process.env.DOCKER_BUILD_SUMMARY);
   }
   return true;
+}
+
+function buildRecordUploadEnabled(): boolean {
+  if (process.env.DOCKER_BUILD_RECORD_UPLOAD) {
+    return Util.parseBool(process.env.DOCKER_BUILD_RECORD_UPLOAD);
+  }
+  return true;
+}
+
+function buildRecordRetentionDays(): number | undefined {
+  const val = process.env.DOCKER_BUILD_RECORD_RETENTION_DAYS;
+  if (val) {
+    const res = parseInt(val);
+    if (isNaN(res)) {
+      throw new Error(`Invalid build record retention days: ${val}`);
+    }
+    return res;
+  }
 }

@@ -1,11 +1,9 @@
 import * as core from '@actions/core';
 import axios, {AxiosError, AxiosInstance, AxiosResponse} from 'axios';
 import axiosRetry, {isNetworkOrIdempotentRequestError} from 'axios-retry';
-import {ExportRecordResponse} from '@docker/actions-toolkit/lib/types/buildx/history';
+import {ExportResponse} from '@docker/actions-toolkit/lib/types/buildx/history.js';
 import FormData from 'form-data';
-import {createClient} from '@connectrpc/connect';
-import {createGrpcTransport} from '@connectrpc/connect-node';
-import {StickyDiskService} from '@buf/blacksmith_vm-agent.connectrpc_es/stickydisk/v1/stickydisk_connect';
+
 
 // Configure base axios instance for Blacksmith API.
 const createBlacksmithAPIClient = () => {
@@ -32,15 +30,6 @@ const createBlacksmithAPIClient = () => {
   return client;
 };
 
-export function createBlacksmithAgentClient() {
-  core.info(`Creating Blacksmith agent client with port: ${process.env.BLACKSMITH_STICKY_DISK_GRPC_PORT || '5557'}`);
-  const transport = createGrpcTransport({
-    baseUrl: `http://192.168.127.1:${process.env.BLACKSMITH_STICKY_DISK_GRPC_PORT || '5557'}`,
-    httpVersion: '2'
-  });
-
-  return createClient(StickyDiskService, transport);
-}
 
 export async function reportBuildPushActionFailure(error?: Error, event?: string, isWarning?: boolean) {
   const requestOptions = {
@@ -59,7 +48,7 @@ export async function reportBuildPushActionFailure(error?: Error, event?: string
   return response.data;
 }
 
-export async function reportBuildCompleted(exportRes?: ExportRecordResponse, blacksmithDockerBuildId?: string | null, buildRef?: string, dockerBuildDurationSeconds?: string): Promise<void> {
+export async function reportBuildCompleted(exportRes?: ExportResponse, blacksmithDockerBuildId?: string | null, buildRef?: string, dockerBuildDurationSeconds?: string): Promise<void> {
   if (!blacksmithDockerBuildId) {
     core.warning('No docker build ID found, skipping build completion report');
     return;
@@ -67,7 +56,7 @@ export async function reportBuildCompleted(exportRes?: ExportRecordResponse, bla
 
   try {
     // Report success to Blacksmith API
-    const requestOptions = {
+    const requestOptions: Record<string, unknown> = {
       docker_build_id: blacksmithDockerBuildId,
       conclusion: 'successful',
       runtime_seconds: dockerBuildDurationSeconds
