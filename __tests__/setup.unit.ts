@@ -22,7 +22,8 @@ process.env = Object.assign({}, process.env, {
   GITHUB_RUN_ATTEMPT: '1',
   GITHUB_EVENT_PATH: githubEventPath,
   RUNNER_TEMP: path.join(tmpDir, 'runner-temp'),
-  RUNNER_TOOL_CACHE: path.join(tmpDir, 'runner-tool-cache')
+  RUNNER_TOOL_CACHE: path.join(tmpDir, 'runner-tool-cache'),
+  INPUT_ESTARGZ: 'false'
 });
 
 vi.mock('@actions/github', () => ({

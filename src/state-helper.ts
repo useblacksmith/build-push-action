@@ -12,6 +12,7 @@ export const summaryInputs = process.env['STATE_summaryInputs'] ? JSON.parse(pro
 
 export const buildRef = process.env['STATE_buildRef'] || '';
 export const isSummarySupported = !!process.env['STATE_isSummarySupported'];
+export const dockerBuildDurationSeconds = process.env['STATE_dockerBuildDurationSeconds'] || '';
 
 export function setTmpDir(tmpDir: string) {
   core.saveState('tmpDir', tmpDir);
@@ -31,6 +32,10 @@ export function setBuildRef(buildRef: string) {
 
 export function setSummarySupported() {
   core.saveState('isSummarySupported', 'true');
+}
+
+export function setDockerBuildDurationSeconds(dockerBuildDurationSeconds: string) {
+  core.saveState('dockerBuildDurationSeconds', dockerBuildDurationSeconds);
 }
 
 export function setSummaryInputs(inputs: Inputs) {

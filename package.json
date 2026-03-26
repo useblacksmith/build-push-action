@@ -25,6 +25,9 @@
   "dependencies": {
     "@actions/core": "^3.0.0",
     "@docker/actions-toolkit": "0.79.0",
+    "axios": "^1.7.0",
+    "axios-retry": "^4.5.0",
+    "form-data": "^4.0.1",
     "handlebars": "^4.7.7"
   },
   "devDependencies": {

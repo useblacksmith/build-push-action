@@ -1,11 +1,28 @@
 import * as core from '@actions/core';
 import * as handlebars from 'handlebars';
+import * as os from 'os';
+import * as path from 'path';
 
 import {Build} from '@docker/actions-toolkit/lib/buildx/build.js';
 import {Context} from '@docker/actions-toolkit/lib/context.js';
 import {GitHub} from '@docker/actions-toolkit/lib/github/github.js';
 import {Toolkit} from '@docker/actions-toolkit/lib/toolkit.js';
 import {Util} from '@docker/actions-toolkit/lib/util.js';
+
+// Helper function to join paths while avoiding duplication of context path
+function joinNonOverlapping(context: string, filePath: string): string {
+  // Normalize both paths to handle any '..' or '.' segments
+  const normalizedContext = path.normalize(context);
+  const normalizedFilePath = path.normalize(filePath);
+
+  // If the file path starts with the context, use it as is to avoid duplication
+  if (normalizedFilePath.startsWith(normalizedContext)) {
+    return normalizedFilePath;
+  }
+
+  // Otherwise join them normally
+  return path.join(normalizedContext, normalizedFilePath);
+}
 
 export interface Inputs {
   'add-hosts': string[];
@@ -41,6 +58,7 @@ export interface Inputs {
   target: string;
   ulimit: string[];
   'github-token': string;
+  estargz: boolean;
 }
 
 export async function getInputs(): Promise<Inputs> {
@@ -77,14 +95,41 @@ export async function getInputs(): Promise<Inputs> {
     tags: Util.getInputList('tags'),
     target: core.getInput('target'),
     ulimit: Util.getInputList('ulimit', {ignoreComma: true}),
-    'github-token': core.getInput('github-token')
+    'github-token': core.getInput('github-token'),
+    estargz: core.getBooleanInput('estargz')
   };
 }
 
+// getDockerfilePath resolves the path to the build entity. This is basically
+// {context}/{file} or {context}/{dockerfile} depending on the inputs.
+export function getDockerfilePath(inputs: Inputs): string | null {
+  try {
+    const context = inputs.context || Context.gitContext();
+    let dockerfilePath: string;
+
+    if (inputs.file) {
+      // If context is git context, just use the file path directly
+      dockerfilePath = context === Context.gitContext() ? path.normalize(inputs.file) : joinNonOverlapping(context, inputs.file);
+    } else if (inputs['dockerfile']) {
+      // If context is git context, just use the dockerfile path directly
+      dockerfilePath = context === Context.gitContext() ? path.normalize(inputs['dockerfile']) : joinNonOverlapping(context, inputs['dockerfile']);
+    } else {
+      // If context is git context, just use 'Dockerfile'
+      dockerfilePath = context === Context.gitContext() ? 'Dockerfile' : joinNonOverlapping(context, 'Dockerfile');
+    }
+    return dockerfilePath;
+  } catch (error) {
+    core.warning(`Error getting dockerfile path: ${(error as Error).message}`);
+    return null;
+  }
+}
+
 export async function getArgs(inputs: Inputs, toolkit: Toolkit): Promise<Array<string>> {
+  core.info(`Inputs.context: ${inputs.context}`);
   const context = handlebars.compile(inputs.context)({
     defaultContext: Context.gitContext()
   });
+  core.info(`Final context: ${context}`);
   // prettier-ignore
   return [
     ...await getBuildArgs(inputs, context, toolkit),
@@ -157,9 +202,30 @@ async function getBuildArgs(inputs: Inputs, context: string, toolkit: Toolkit): 
   await Util.asyncForEach(inputs['no-cache-filters'], async noCacheFilter => {
     args.push('--no-cache-filter', noCacheFilter);
   });
+
+  // Check estargz requirements BEFORE modifying outputs.
+  const useEstargz = inputs.estargz && inputs.push && (await toolkit.buildx.versionSatisfies('>=0.10.0'));
+
+  if (inputs.estargz) {
+    if (!(await toolkit.buildx.versionSatisfies('>=0.10.0'))) {
+      core.warning("eStargz compression requires buildx >= 0.10.0; the input 'estargz' is ignored.");
+    } else if (!inputs.push) {
+      core.warning("eStargz compression requires push: true; the input 'estargz' is ignored.");
+    }
+  }
+
   await Util.asyncForEach(inputs.outputs, async output => {
-    args.push('--output', output);
+    if (useEstargz && (output.startsWith('type=registry') || output === 'type=registry')) {
+      const estargzOutput = `${output},compression=estargz,force-compression=true,oci-mediatypes=true`;
+      args.push('--output', estargzOutput);
+    } else {
+      args.push('--output', output);
+    }
   });
+
+  if (useEstargz && inputs.outputs.length === 0) {
+    args.push('--output', 'type=registry,compression=estargz,force-compression=true,oci-mediatypes=true');
+  }
   if (inputs.platforms.length > 0) {
     args.push('--platform', inputs.platforms.join(','));
   }
@@ -283,4 +349,48 @@ function noDefaultAttestations(): boolean {
     return Util.parseBool(process.env.BUILDX_NO_DEFAULT_ATTESTATIONS);
   }
   return false;
+}
+
+/**
+ * Resolve the platform list that should be passed to `docker buildx create`.
+ *
+ * Priority:
+ *   1. Use the user-supplied platforms list (comma-joined) if provided.
+ *   2. Fallback to the architecture of the host runner.
+ *
+ * The function is exported to allow isolated unit testing.
+ */
+export function resolveRemoteBuilderPlatforms(platforms?: string[]): string {
+  // If user explicitly provided platforms, honour them verbatim.
+  if (platforms && platforms.length > 0) {
+    return platforms.join(',');
+  }
+
+  // Otherwise derive from host architecture.
+  const nodeArch = os.arch(); // e.g. 'x64', 'arm64', 'arm'
+  const archMap: {[key: string]: string} = {
+    x64: 'amd64',
+    arm64: 'arm64',
+    arm: 'arm'
+  };
+  const mappedArch = archMap[nodeArch] || nodeArch;
+  return `linux/${mappedArch}`;
+}
+
+export async function getRemoteBuilderArgs(name: string, builderUrl: string, platforms?: string[]): Promise<Array<string>> {
+  const args: Array<string> = ['create', '--name', name, '--driver', 'remote'];
+
+  const platformFlag = resolveRemoteBuilderPlatforms(platforms);
+  core.info(`Determined remote builder platform(s): ${platformFlag}`);
+  args.push('--platform', platformFlag);
+
+  // Always use the remote builder, overriding whatever has been configured so far.
+  args.push('--use');
+  // Use the provided builder URL
+  args.push(builderUrl);
+  return args;
+}
+
+export async function getUseBuilderArgs(name: string): Promise<Array<string>> {
+  return ['use', name, '--global'];
 }

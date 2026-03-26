@@ -61,6 +61,8 @@ describe('getArgs', () => {
       }
       return object;
     }, {});
+    // Blacksmith: ensure estargz default is always set
+    process.env['INPUT_ESTARGZ'] = 'false';
   });
   afterEach(() => {
     process.env = originalEnv;
