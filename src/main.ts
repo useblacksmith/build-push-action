@@ -259,7 +259,8 @@ actionsToolkit.run(
             // Race between the export operation and the timeout
             exportRes = await Promise.race([
               buildxHistory.export({
-                refs: ref ? [ref] : []
+                refs: ref ? [ref] : [],
+                image: 'docker.io/dockereng/export-build@sha256:8a8d92fc2d7cc8a8855400970bb971436fc117bd39366595f55f7e1283a1e961'
               }),
               exportTimeout
             ]);
