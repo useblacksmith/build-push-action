@@ -104,7 +104,7 @@ actionsToolkit.run(
             // Check if this is a Blacksmith builder
             isBlacksmithBuilder = builder.name ? builder.name.toLowerCase().includes('blacksmith') : false;
             if (!isBlacksmithBuilder) {
-              core.warning(`Not using a Blacksmith builder (current builder: ${builder.name || 'unknown'}). Build metrics will not be reported.`);
+              core.warning(`Not using a Blacksmith builder (current builder: ${builder.name || 'unknown'}). Build metrics will not be reported. Please use the useblacksmith/setup-docker-builder action to configure a Blacksmith builder.`);
             }
           } else {
             core.setFailed(`No Docker builder found. Please use setup-docker-builder action or configure a builder before using build-push-action.`);
