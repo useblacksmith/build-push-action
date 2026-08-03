@@ -54,7 +54,7 @@ export function createBlacksmithAgentClient() {
 
 export async function reportBuildPushActionFailure(error?: Error, event?: string, isWarning?: boolean) {
   const requestOptions = {
-    stickydisk_key: process.env.GITHUB_REPO_NAME || '',
+    stickydisk_key: process.env.BLACKSMITH_STICKYDISK_KEY || process.env.GITHUB_REPO_NAME || '',
     repo_name: process.env.GITHUB_REPO_NAME || '',
     region: process.env.BLACKSMITH_REGION || 'eu-central',
     arch: process.env.BLACKSMITH_ENV?.includes('arm') ? 'arm64' : 'amd64',
@@ -137,6 +137,7 @@ export async function reportBuild(dockerfilePath: string) {
     const requestBody = {
       dockerfile_path: dockerfilePath,
       repo_name: process.env.GITHUB_REPO_NAME || '',
+      stickydisk_key: process.env.BLACKSMITH_STICKYDISK_KEY || process.env.GITHUB_REPO_NAME || '',
       region: process.env.BLACKSMITH_REGION || 'eu-central',
       arch: process.env.BLACKSMITH_ENV?.includes('arm') ? 'arm64' : 'amd64',
       git_sha: process.env.GITHUB_SHA || '',
