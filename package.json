@@ -36,7 +36,7 @@
     "execa": "^9.5.2",
     "form-data": "^4.0.1",
     "handlebars": "^4.7.7",
-    "portfinder": "^1.0.32"
+    "portfinder": "^1.0.37"
   },
   "devDependencies": {
     "@babel/core": "^7.26.10",
